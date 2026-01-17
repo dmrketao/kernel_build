@@ -11,16 +11,16 @@ jobs:
 
       - name: Setup environment
         run: |
-          # Reading variables from config.env and making them available to the shell
-          cat config.env | while read line; do
+          # Read config.env and export each line to the GITHUB_ENV for later steps
+          while read -r line || [[ -n "$line" ]]; do
             if [[ ! -z "$line" && "$line" != "#"* ]]; then
               echo "$line" >> $GITHUB_ENV
             fi
-          done
+          done < config.env
 
       - name: Pull toolchain
         run: |
-          # Use Clang 12 (r416183b) for better 4.19 compatibility
+          # Use Clang r416183b for best 4.19 kernel compatibility
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 aarch64-linux-android-4.9
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 arm-linux-androideabi-4.9
           mkdir clang && curl -L https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-r416183b.tar.gz -o clang.tar.gz
@@ -28,7 +28,8 @@ jobs:
 
       - name: Pull kernel source
         run: |
-          # Using $VAR syntax for bash steps
+          # Added safe directory fix to prevent exit code 128
+          git config --global --add safe.directory "*"
           git clone --depth=1 $KERNEL_SOURCE -b $KERNEL_SOURCE_BRANCH kernel-source
 
       - name: Integrate SukiSU-Ultra & SUSFS
@@ -37,7 +38,7 @@ jobs:
           # 1. Pull SukiSU-Ultra (susfs-main branch)
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
           
-          # 2. Apply SUSFS Patches (Kernel 4.19)
+          # 2. Clone and Apply SUSFS Patches
           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-4.19 ../susfs
           cp ../susfs/kernel_patches/fs/susfs.c fs/
           cp ../susfs/kernel_patches/include/linux/susfs.h include/linux/
@@ -49,7 +50,7 @@ jobs:
       - name: Inject Config Flags
         run: |
           cd kernel-source
-          # Force KSU and SUSFS into your specific defconfig
+          # Append SukiSU/SUSFS configs to your defconfig
           echo "CONFIG_KSU=y" >> arch/arm64/configs/$KERNEL_CONFIG
           echo "CONFIG_KSU_ULTRA=y" >> arch/arm64/configs/$KERNEL_CONFIG
           echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/$KERNEL_CONFIG
@@ -77,15 +78,17 @@ jobs:
           git clone --depth=1 $ANYKERNEL_SOURCE -b $ANYKERNEL_SOURCE_BRANCH AnyKernel3
           rm -rf AnyKernel3/.git AnyKernel3/.github
           
-          # Move the compiled Image to AnyKernel folder
+          # Check for different possible build outputs
           if [[ -f out/arch/arm64/boot/Image.gz-dtb ]]; then
             cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
           elif [[ -f out/arch/arm64/boot/Image.gz ]]; then
             cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
+          elif [[ -f out/arch/arm64/boot/Image ]]; then
+            cp out/arch/arm64/boot/Image AnyKernel3/Image
           fi
 
       - name: Upload kernel to artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SukiSU-Ultra-Kernel
+          name: SukiSU-Ultra-Output
           path: AnyKernel3/*
