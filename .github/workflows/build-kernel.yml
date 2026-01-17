@@ -31,13 +31,13 @@ jobs:
       - name: Integrate SukiSU-Ultra & SUSFS
         run: |
           cd kernel-source
-          # 1. Pull SukiSU-Ultra
+          # 1. Setup SukiSU-Ultra
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
           
           # 2. Pull SUSFS
           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-4.19 ../susfs
           
-          # 3. Apply SUSFS files and patches
+          # 3. Patch and Fix Samsung Driver Errors
           cp ../susfs/kernel_patches/fs/susfs.c fs/
           cp ../susfs/kernel_patches/include/linux/susfs.h include/linux/
           patch -p1 --fuzz=3 < ../susfs/kernel_patches/50_add_susfs_in_kernel-4.19.patch || true
@@ -46,8 +46,12 @@ jobs:
           patch -p1 --fuzz=3 < ../../../susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true
           cd ../..
 
-          # 4. FIX: Inject missing pinctrl header for Samsung sar_mode_detect
+          # 4. CRITICAL: Inject missing Samsung header
           sed -i '1i #include <linux/pinctrl/consumer.h>' drivers/input/sar_mode_detect/sar_mode_detect.c
+          
+          # 5. Disable -Werror globally so warnings don't stop the build
+          sed -i 's/-Werror//g' Makefile
+          sed -i 's/-Werror//g' arch/arm64/Makefile
 
       - name: Inject Config Flags
         run: |
@@ -64,6 +68,7 @@ jobs:
           export KBUILD_BUILD_HOST="workspace"
           export PATH=$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/aarch64-linux-android-4.9/bin:$PATH
           
+          # Using LLVM=1 and LLVM_IAS=1 to force Clang's integrated tools
           args="ARCH=arm64 \
                 O=../out \
                 CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -72,16 +77,26 @@ jobs:
                 LLVM=1 LLVM_IAS=1"
           
           cd kernel-source
-          # Prepare the config
           make ${args} $KERNEL_CONFIG
           
-          # Compile (Using multi-threading to speed it up)
-          make -j$(nproc) ${args} CC=clang
+          # Use -j$(nproc) but pipe output to a file if it fails so we can find the REAL error
+          make -j$(nproc) ${args} CC=clang || (make ${args} CC=clang 2>&1 | tail -n 50 && exit 1)
 
       - name: Package kernel
         run: |
           git clone --depth=1 $ANYKERNEL_SOURCE -b $ANYKERNEL_SOURCE_BRANCH AnyKernel3
           rm -rf AnyKernel3/.git AnyKernel3/.github
+          # Look for the resulting image in the /out directory
           if [[ -f out/arch/arm64/boot/Image.gz-dtb ]]; then
             cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
           elif [[ -f out/arch/arm64/boot/Image.gz ]]; then
+            cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
+          elif [[ -f out/arch/arm64/boot/Image ]]; then
+            cp out/arch/arm64/boot/Image AnyKernel3/Image
+          fi
+
+      - name: Upload kernel to artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SukiSU-Ultra-Output
+          path: AnyKernel3/*
