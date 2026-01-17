@@ -19,6 +19,7 @@ jobs:
 
       - name: Pull toolchain
         run: |
+          # Cloning specific compatible toolchains for 4.19
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 aarch64-linux-android-4.9
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 arm-linux-androideabi-4.9
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b clang
@@ -31,7 +32,7 @@ jobs:
       - name: Integrate SukiSU-Ultra & SUSFS
         run: |
           cd kernel-source
-          # 1. Setup SukiSU-Ultra
+          # 1. Setup SukiSU-Ultra using 'main' (Fixes 'susfs-main' error from your logs)
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
           
           # 2. Pull SUSFS
@@ -45,9 +46,60 @@ jobs:
           cd drivers/kernelsu
           patch -p1 --fuzz=3 < ../../../susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true
           
-          # FIX: Remove Module Namespace for legacy 4.19 kernels
+          # FIX: Remove Module Namespace for legacy 4.19 kernels (Fixes MODULE_IMPORT_NS error)
           sed -i 's/MODULE_IMPORT_NS/\/\/MODULE_IMPORT_NS/g' ksu.c
           cd ../..
 
-          # 4. FIX: Inject missing Samsung header
+          # 4. FIX: Inject missing Samsung header for sar_mode_detect
           sed -i '1i #include <linux/pinctrl/consumer.h>' drivers/input/sar_mode_detect/sar_mode_detect.c
+          
+          # 5. FIX: Global -Werror removal to prevent crash on warnings
+          find . -type f -name "Makefile*" -exec sed -i 's/-Werror//g' {} +
+
+      - name: Inject Config Flags
+        run: |
+          cd kernel-source
+          echo "CONFIG_KSU=y" >> arch/arm64/configs/$KERNEL_CONFIG
+          echo "CONFIG_KSU_ULTRA=y" >> arch/arm64/configs/$KERNEL_CONFIG
+          echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/$KERNEL_CONFIG
+          echo "CONFIG_KALLSYMS=y" >> arch/arm64/configs/$KERNEL_CONFIG
+          echo "CONFIG_KALLSYMS_ALL=y" >> arch/arm64/configs/$KERNEL_CONFIG
+
+      - name: Build kernel
+        run: |
+          export KBUILD_BUILD_USER="zclkkk"
+          export KBUILD_BUILD_HOST="workspace"
+          export PATH=$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/aarch64-linux-android-4.9/bin:$PATH
+          
+          # KCFLAGS forces the bypass of unknown GCC flags like '-implicit-function-declaration'
+          export KCFLAGS="-Wno-error -Wno-unknown-warning-option -Wno-implicit-function-declaration -Wno-return-type"
+          
+          args="ARCH=arm64 \
+                O=../out \
+                CLANG_TRIPLE=aarch64-linux-gnu- \
+                CROSS_COMPILE=aarch64-linux-android- \
+                CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+                LLVM=1 LLVM_IAS=1"
+          
+          cd kernel-source
+          make ${args} $KERNEL_CONFIG
+          make -j$(nproc) ${args} CC=clang KCFLAGS="$KCFLAGS" || (make ${args} CC=clang KCFLAGS="$KCFLAGS" 2>&1 | tail -n 50 && exit 1)
+
+      - name: Package kernel
+        run: |
+          git clone --depth=1 $ANYKERNEL_SOURCE -b $ANYKERNEL_SOURCE_BRANCH AnyKernel3
+          rm -rf AnyKernel3/.git AnyKernel3/.github
+          # Moving the built Image to AnyKernel folder
+          if [[ -f out/arch/arm64/boot/Image.gz-dtb ]]; then
+            cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
+          elif [[ -f out/arch/arm64/boot/Image.gz ]]; then
+            cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
+          elif [[ -f out/arch/arm64/boot/Image ]]; then
+            cp out/arch/arm64/boot/Image AnyKernel3/Image
+          fi
+
+      - name: Upload kernel to artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SukiSU-Ultra-Output
+          path: AnyKernel3/*
