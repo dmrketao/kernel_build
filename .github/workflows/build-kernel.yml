@@ -37,7 +37,7 @@ jobs:
           # 2. Pull SUSFS
           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-4.19 ../susfs
           
-          # 3. Patch and Fix Samsung Driver Errors
+          # 3. Patch SUSFS
           cp ../susfs/kernel_patches/fs/susfs.c fs/
           cp ../susfs/kernel_patches/include/linux/susfs.h include/linux/
           patch -p1 --fuzz=3 < ../susfs/kernel_patches/50_add_susfs_in_kernel-4.19.patch || true
@@ -46,12 +46,13 @@ jobs:
           patch -p1 --fuzz=3 < ../../../susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true
           cd ../..
 
-          # 4. CRITICAL: Inject missing Samsung header
+          # 4. FIX: Inject missing Samsung header
           sed -i '1i #include <linux/pinctrl/consumer.h>' drivers/input/sar_mode_detect/sar_mode_detect.c
           
-          # 5. Disable -Werror globally so warnings don't stop the build
-          sed -i 's/-Werror//g' Makefile
-          sed -i 's/-Werror//g' arch/arm64/Makefile
+          # 5. FIX: Remove broken GCC flags that crash Clang
+          sed -i 's/-Werror=implicit-function-declaration//g' Makefile
+          sed -i 's/-Werror=return-type//g' Makefile
+          sed -i 's/-Wimplicit-function-declaration//g' Makefile
 
       - name: Inject Config Flags
         run: |
@@ -59,8 +60,6 @@ jobs:
           echo "CONFIG_KSU=y" >> arch/arm64/configs/$KERNEL_CONFIG
           echo "CONFIG_KSU_ULTRA=y" >> arch/arm64/configs/$KERNEL_CONFIG
           echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/$KERNEL_CONFIG
-          echo "CONFIG_KALLSYMS=y" >> arch/arm64/configs/$KERNEL_CONFIG
-          echo "CONFIG_KALLSYMS_ALL=y" >> arch/arm64/configs/$KERNEL_CONFIG
 
       - name: Build kernel
         run: |
@@ -68,7 +67,6 @@ jobs:
           export KBUILD_BUILD_HOST="workspace"
           export PATH=$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/aarch64-linux-android-4.9/bin:$PATH
           
-          # Using LLVM=1 and LLVM_IAS=1 to force Clang's integrated tools
           args="ARCH=arm64 \
                 O=../out \
                 CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -78,15 +76,12 @@ jobs:
           
           cd kernel-source
           make ${args} $KERNEL_CONFIG
-          
-          # Use -j$(nproc) but pipe output to a file if it fails so we can find the REAL error
           make -j$(nproc) ${args} CC=clang || (make ${args} CC=clang 2>&1 | tail -n 50 && exit 1)
 
       - name: Package kernel
         run: |
           git clone --depth=1 $ANYKERNEL_SOURCE -b $ANYKERNEL_SOURCE_BRANCH AnyKernel3
           rm -rf AnyKernel3/.git AnyKernel3/.github
-          # Look for the resulting image in the /out directory
           if [[ -f out/arch/arm64/boot/Image.gz-dtb ]]; then
             cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
           elif [[ -f out/arch/arm64/boot/Image.gz ]]; then
