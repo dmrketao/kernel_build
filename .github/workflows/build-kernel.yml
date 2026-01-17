@@ -17,8 +17,7 @@ jobs:
               echo "$line" >> $GITHUB_ENV
             fi
           done < config.env
-
-     - name: Pull toolchain
+- name: Pull toolchain
         run: |
           # Clone GCC for 64-bit and 32-bit
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 aarch64-linux-android-4.9
@@ -26,12 +25,6 @@ jobs:
           
           # Clone Clang r416183b directly (more stable than curl for this kernel)
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b clang
-      - name: Pull kernel source
-        run: |
-          # Added safe directory fix to prevent exit code 128
-          git config --global --add safe.directory "*"
-          git clone --depth=1 $KERNEL_SOURCE -b $KERNEL_SOURCE_BRANCH kernel-source
-
       - name: Integrate SukiSU-Ultra & SUSFS
         run: |
           cd kernel-source
