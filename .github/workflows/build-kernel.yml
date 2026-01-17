@@ -11,39 +11,36 @@ jobs:
 
       - name: Setup environment
         run: |
-          # Read config.env and export each line to the GITHUB_ENV for later steps
           while read -r line || [[ -n "$line" ]]; do
             if [[ ! -z "$line" && "$line" != "#"* ]]; then
               echo "$line" >> $GITHUB_ENV
             fi
           done < config.env
-- name: Pull toolchain
+
+      - name: Pull toolchain
         run: |
-          # Clone GCC for 64-bit and 32-bit
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 aarch64-linux-android-4.9
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 arm-linux-androideabi-4.9
-          
-          # Clone Clang r416183b directly (more stable than curl for this kernel)
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b clang
+
+      - name: Pull kernel source
+        run: |
+          git config --global --add safe.directory "*"
+          git clone --depth=1 $KERNEL_SOURCE -b $KERNEL_SOURCE_BRANCH kernel-source
+
       - name: Integrate SukiSU-Ultra & SUSFS
         run: |
           cd kernel-source
-          # 1. Pull SukiSU-Ultra (susfs-main branch)
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
-          
-          # 2. Clone and Apply SUSFS Patches
           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-4.19 ../susfs
           cp ../susfs/kernel_patches/fs/susfs.c fs/
           cp ../susfs/kernel_patches/include/linux/susfs.h include/linux/
-          
-          # Patch core and ksu
           patch -p1 < ../susfs/kernel_patches/50_add_susfs_in_kernel-4.19.patch
           cd drivers/kernelsu && patch -p1 < ../../../susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch && cd ../..
 
       - name: Inject Config Flags
         run: |
           cd kernel-source
-          # Append SukiSU/SUSFS configs to your defconfig
           echo "CONFIG_KSU=y" >> arch/arm64/configs/$KERNEL_CONFIG
           echo "CONFIG_KSU_ULTRA=y" >> arch/arm64/configs/$KERNEL_CONFIG
           echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/$KERNEL_CONFIG
@@ -55,13 +52,11 @@ jobs:
           export KBUILD_BUILD_USER="zclkkk"
           export KBUILD_BUILD_HOST="workspace"
           export PATH=$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/aarch64-linux-android-4.9/bin:$PATH
-          
           args="ARCH=arm64 \
                 O=../out \
                 CLANG_TRIPLE=aarch64-linux-gnu- \
                 CROSS_COMPILE=aarch64-linux-android- \
                 CROSS_COMPILE_ARM32=arm-linux-androideabi- "
-          
           cd kernel-source
           make ${args} $KERNEL_CONFIG
           make -j$(nproc) ${args} CC=clang
@@ -70,8 +65,6 @@ jobs:
         run: |
           git clone --depth=1 $ANYKERNEL_SOURCE -b $ANYKERNEL_SOURCE_BRANCH AnyKernel3
           rm -rf AnyKernel3/.git AnyKernel3/.github
-          
-          # Check for different possible build outputs
           if [[ -f out/arch/arm64/boot/Image.gz-dtb ]]; then
             cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
           elif [[ -f out/arch/arm64/boot/Image.gz ]]; then
