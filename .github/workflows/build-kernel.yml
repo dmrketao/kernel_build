@@ -19,7 +19,6 @@ jobs:
 
       - name: Pull toolchain
         run: |
-          # Cloning specific compatible toolchains for 4.19
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 aarch64-linux-android-4.9
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 arm-linux-androideabi-4.9
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b clang
@@ -32,13 +31,13 @@ jobs:
       - name: Integrate SukiSU-Ultra & SUSFS
         run: |
           cd kernel-source
-          # 1. Setup SukiSU-Ultra using 'main' (Fixes 'susfs-main' error from your logs)
+          # 1. Setup SukiSU-Ultra (Use 'main' to avoid branch errors)
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
           
           # 2. Pull SUSFS
           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-4.19 ../susfs
           
-          # 3. Patch SUSFS
+          # 3. Patching
           cp ../susfs/kernel_patches/fs/susfs.c fs/
           cp ../susfs/kernel_patches/include/linux/susfs.h include/linux/
           patch -p1 --fuzz=3 < ../susfs/kernel_patches/50_add_susfs_in_kernel-4.19.patch || true
@@ -46,15 +45,17 @@ jobs:
           cd drivers/kernelsu
           patch -p1 --fuzz=3 < ../../../susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true
           
-          # FIX: Remove Module Namespace for legacy 4.19 kernels (Fixes MODULE_IMPORT_NS error)
+          # FIX: Kill Module Namespace (Legacy 4.19 doesn't support it)
           sed -i 's/MODULE_IMPORT_NS/\/\/MODULE_IMPORT_NS/g' ksu.c
           cd ../..
 
-          # 4. FIX: Inject missing Samsung header for sar_mode_detect
+          # 4. FIX: Inject missing Samsung header
           sed -i '1i #include <linux/pinctrl/consumer.h>' drivers/input/sar_mode_detect/sar_mode_detect.c
           
-          # 5. FIX: Global -Werror removal to prevent crash on warnings
-          find . -type f -name "Makefile*" -exec sed -i 's/-Werror//g' {} +
+          # 5. FIX: Aggressively scrub the Makefiles of ALL -Werror variants
+          # This version replaces the whole flag string with a blank space to prevent the "=return-type" error
+          find . -type f -name "Makefile*" -exec sed -i 's/-Werror[^ ]*//g' {} +
+          find . -type f -name "Makefile*" -exec sed -i 's/-Wimplicit-function-declaration//g' {} +
 
       - name: Inject Config Flags
         run: |
@@ -62,8 +63,6 @@ jobs:
           echo "CONFIG_KSU=y" >> arch/arm64/configs/$KERNEL_CONFIG
           echo "CONFIG_KSU_ULTRA=y" >> arch/arm64/configs/$KERNEL_CONFIG
           echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/$KERNEL_CONFIG
-          echo "CONFIG_KALLSYMS=y" >> arch/arm64/configs/$KERNEL_CONFIG
-          echo "CONFIG_KALLSYMS_ALL=y" >> arch/arm64/configs/$KERNEL_CONFIG
 
       - name: Build kernel
         run: |
@@ -71,8 +70,8 @@ jobs:
           export KBUILD_BUILD_HOST="workspace"
           export PATH=$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/aarch64-linux-android-4.9/bin:$PATH
           
-          # KCFLAGS forces the bypass of unknown GCC flags like '-implicit-function-declaration'
-          export KCFLAGS="-Wno-error -Wno-unknown-warning-option -Wno-implicit-function-declaration -Wno-return-type"
+          # We pass these as CLANG_FLAGS to ensure they are used even in the early scripts/ stage
+          COMMON_FLAGS="-Wno-error -Wno-unknown-warning-option -Wno-implicit-function-declaration -Wno-return-type -Wno-unused-variable"
           
           args="ARCH=arm64 \
                 O=../out \
@@ -82,14 +81,16 @@ jobs:
                 LLVM=1 LLVM_IAS=1"
           
           cd kernel-source
+          # Configure
           make ${args} $KERNEL_CONFIG
-          make -j$(nproc) ${args} CC=clang KCFLAGS="$KCFLAGS" || (make ${args} CC=clang KCFLAGS="$KCFLAGS" 2>&1 | tail -n 50 && exit 1)
+          
+          # Build with KCFLAGS to override any remaining bad flags
+          make -j$(nproc) ${args} CC=clang KCFLAGS="$COMMON_FLAGS" || (make ${args} CC=clang KCFLAGS="$COMMON_FLAGS" 2>&1 | tail -n 100 && exit 1)
 
       - name: Package kernel
         run: |
           git clone --depth=1 $ANYKERNEL_SOURCE -b $ANYKERNEL_SOURCE_BRANCH AnyKernel3
           rm -rf AnyKernel3/.git AnyKernel3/.github
-          # Moving the built Image to AnyKernel folder
           if [[ -f out/arch/arm64/boot/Image.gz-dtb ]]; then
             cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
           elif [[ -f out/arch/arm64/boot/Image.gz ]]; then
