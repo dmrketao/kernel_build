@@ -31,17 +31,17 @@ jobs:
       - name: Integrate SukiSU-Ultra & SUSFS
         run: |
           cd kernel-source
-          # 1. Pull SukiSU-Ultra using the stable 'main' branch
+          # 1. Pull SukiSU-Ultra using the stable main branch
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
           
           # 2. Pull SUSFS
           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-4.19 ../susfs
           
-          # 3. Copy SUSFS files
+          # 3. Apply patches with --fuzz=3 to ignore minor Samsung line changes
           cp ../susfs/kernel_patches/fs/susfs.c fs/
           cp ../susfs/kernel_patches/include/linux/susfs.h include/linux/
           
-          # 4. Apply patches with --fuzz=3 to bypass Samsung line number mismatches
+          # Use || true to prevent crash if small parts of the patch fail
           patch -p1 --fuzz=3 < ../susfs/kernel_patches/50_add_susfs_in_kernel-4.19.patch || true
           
           cd drivers/kernelsu
@@ -54,20 +54,29 @@ jobs:
           echo "CONFIG_KSU=y" >> arch/arm64/configs/$KERNEL_CONFIG
           echo "CONFIG_KSU_ULTRA=y" >> arch/arm64/configs/$KERNEL_CONFIG
           echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/$KERNEL_CONFIG
+          # For non-GKI legacy Samsung kernels
+          echo "CONFIG_KALLSYMS=y" >> arch/arm64/configs/$KERNEL_CONFIG
+          echo "CONFIG_KALLSYMS_ALL=y" >> arch/arm64/configs/$KERNEL_CONFIG
 
       - name: Build kernel
         run: |
           export KBUILD_BUILD_USER="zclkkk"
           export KBUILD_BUILD_HOST="workspace"
           export PATH=$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/aarch64-linux-android-4.9/bin:$PATH
+          
+          # LLVM=1 and LLVM_IAS=1 are crucial for modern Clang to work with old Makefiles
           args="ARCH=arm64 \
                 O=../out \
                 CLANG_TRIPLE=aarch64-linux-gnu- \
                 CROSS_COMPILE=aarch64-linux-android- \
-                CROSS_COMPILE_ARM32=arm-linux-androideabi- "
+                CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+                LLVM=1 LLVM_IAS=1"
+          
           cd kernel-source
           make ${args} $KERNEL_CONFIG
-          make -j$(nproc) ${args} CC=clang
+          
+          # NOTE: Removed -j$(nproc) so the ACTUAL error appears at the end of the log
+          make ${args} CC=clang
 
       - name: Package kernel
         run: |
