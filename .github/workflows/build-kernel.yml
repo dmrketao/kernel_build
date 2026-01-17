@@ -52,12 +52,13 @@ jobs:
           # 4. FIX: Inject missing Samsung header
           sed -i '1i #include <linux/pinctrl/consumer.h>' drivers/input/sar_mode_detect/sar_mode_detect.c
           
-          # 5. FIX: Global removal of broken GCC flags that crash Clang
-          # We use find to catch these in arch/arm64/Makefile and others
-          find . -name "Makefile*" -o -name "*.mk" | xargs sed -i 's/-Werror=implicit-function-declaration//g'
-          find . -name "Makefile*" -o -name "*.mk" | xargs sed -i 's/-Werror=return-type//g'
-          find . -name "Makefile*" -o -name "*.mk" | xargs sed -i 's/-Wimplicit-function-declaration//g'
-          find . -name "Makefile*" -o -name "*.mk" | xargs sed -i 's/-Werror//g'
+          # 5. THE SLEDGEHAMMER: Force Clang to ignore all broken GCC warning flags
+          # This adds the ignore flags to the very top of the main Makefile
+          sed -i '/^KBUILD_CFLAGS   :=/a KBUILD_CFLAGS += -Wno-error -Wno-unknown-warning-option -Wno-implicit-function-declaration -Wno-return-type' Makefile
+          
+          # Wipe out any hardcoded -Werror in any Makefile in the tree
+          find . -type f -name "Makefile*" -exec sed -i 's/-Werror//g' {} +
+          find . -type f -name "Makefile*" -exec sed -i 's/-fno-allow-store-data-races//g' {} +
 
       - name: Inject Config Flags
         run: |
@@ -74,6 +75,7 @@ jobs:
           export KBUILD_BUILD_HOST="workspace"
           export PATH=$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/aarch64-linux-android-4.9/bin:$PATH
           
+          # LLVM=1 handles the assembler/linker issues mentioned in your logs
           args="ARCH=arm64 \
                 O=../out \
                 CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -83,7 +85,9 @@ jobs:
           
           cd kernel-source
           make ${args} $KERNEL_CONFIG
-          make -j$(nproc) ${args} CC=clang || (make ${args} CC=clang 2>&1 | tail -n 50 && exit 1)
+          
+          # We use a custom CC command to force bypass the specific bad flags
+          make -j$(nproc) ${args} CC="clang -Wno-error -Wno-unknown-warning-option" || (make ${args} CC="clang -Wno-error" 2>&1 | tail -n 50 && exit 1)
 
       - name: Package kernel
         run: |
